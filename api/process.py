@@ -15,6 +15,7 @@ def motor_baremacion_itacyl(row):
         except:
             return 0.0
 
+    # Capturamos el nombre y nos aseguramos de que sea texto limpio
     nombre_original = str(row.get('name', 'SIN NOMBRE')).upper()
     
     # --- DETERMINACIÓN DEL IS_valor ---
@@ -38,7 +39,7 @@ def motor_baremacion_itacyl(row):
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR"]
     es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
     if es_tec or any(k in nombre_original for k in kw_inh):
-        return "10,0", "[C]", "Nulo", is_v
+        return f'="{nombre_original}"', "[C]", "Nulo", is_v, "10,0"
 
     # --- FASE III: ALGORITMO ACUMULATIVO ---
     baremo = 6.0
@@ -64,9 +65,8 @@ def motor_baremacion_itacyl(row):
     final = round(min(max(baremo, 1.0), 10.0), 1)
     tipo = "[R]" if row.get('aggregateState') == 'L' else "[F]"
     
-    # IMPORTANTE: Devolvemos el nombre formateado para Excel en el primer valor
-    nombre_excel = f'="{nombre_original}"'
-    return nombre_excel, tipo, "Verificado", is_v, str(final).replace('.', ',')
+    # Mantenemos el truco de las comillas para evitar fechas en Excel
+    return f'="{nombre_original}"', tipo, "Verificado", is_v, str(final).replace('.', ',')
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -84,21 +84,25 @@ class handler(BaseHTTPRequestHandler):
 
             df = pd.DataFrame(lista)
             
-            # Ejecutar Baremación (ahora devuelve 5 valores directamente)
+            # Aplicamos la baremación
             res_df = df.apply(lambda r: pd.Series(motor_baremacion_itacyl(r)), axis=1)
             res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
             
-            # Generar CSV con codificación para Excel (utf-8-sig)
-            csv_str = res_df.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
+            # Generamos el CSV como cadena de texto
+            csv_str = res_df.to_csv(index=False, sep=';', decimal=',', encoding='utf-8')
+            
+            # LA CLAVE: Prependemos el BOM (\ufeff) al convertir a bytes
+            # Esto le dice a Excel: "Usa UTF-8"
+            csv_bytes = b'\xef\xbb\xbf' + csv_str.encode('utf-8')
             
             self.send_response(200)
-            self.send_header('Content-type', 'text/csv')
+            self.send_header('Content-type', 'text/csv; charset=utf-8')
             self.send_header('Content-Disposition', 'attachment; filename="baremo_itacyl.csv"')
             self.end_headers()
-            self.wfile.write(csv_str.encode('utf-8'))
+            self.wfile.write(csv_bytes)
 
         except Exception as e:
             self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
             self.end_headers()
             self.wfile.write(f"ERROR: {str(e)}".encode('utf-8'))
