@@ -8,27 +8,35 @@ import csv
 def motor_baremacion_itacyl(row):
     """
     MOTOR DE BAREMACIÓN AGRONÓMICA - ESCENARIO A
-    Versión 1.3.1 FINAL | Protección Anti-Excel y Lógica SIEX Ampliada
+    Versión 1.3.1 FINAL | Auditoría ITACyL
+    Protección Anti-Excel (Apóstrofo) y Lógica SIEX 1.3.1
     """
-    # 0. PREPROCESAMIENTO Y PROTECCIÓN DE FORMATO
+    # 0. PREPROCESAMIENTO Y PROTECCIÓN DE INTEGRIDAD
     nombre_raw = str(row.get('name', '')).strip()
-    if not nombre_raw or nombre_raw.lower() == 'nan': nombre_raw = "PRODUCTO SIN NOMBRE"
+    if not nombre_raw or nombre_raw.lower() == 'nan': 
+        nombre_raw = "PRODUCTO SIN NOMBRE"
     nombre = nombre_raw.upper()
     
-    # El Tabulador (\t) es la clave para que Excel no transforme nombres en fechas
-    nombre_protegido = f"\t{nombre_raw}"
+    # PROTECCIÓN EXCEL: Forzamos formato texto con el apóstrofo (')
+    nombre_protegido = f"'{nombre_raw}"
 
-    def get_val(key):
-        v = row.get(key)
-        if pd.isna(v) or v is None: return 0.0
-        try: return float(v)
+    def clean(val):
+        if pd.isna(val) or val is None: return 0.0
+        try: return float(val)
         except: return 0.0
 
-    # Carga de variables analíticas
-    n, p2o5, k2o = get_val('n'), get_val('p2o5'), get_val('k2o')
-    nitricN, ammoniacalN = get_val('nitricN'), get_val('ammoniacalN')
-    organicMatter, s = get_val('organicMatter'), get_val('s')
-    materialSiexId = get_val('materialSiexId') 
+    # Carga de variables analíticas primarias
+    n, p2o5, k2o = clean(row.get('n')), clean(row.get('p2o5')), clean(row.get('k2o'))
+    nitricN, ammoniacalN = clean(row.get('nitricN')), clean(row.get('ammoniacalN'))
+    organicMatter, s = clean(row.get('organicMatter')), clean(row.get('s'))
+    materialSiexId = clean(row.get('materialSiexId')) 
+
+    micros_vals = {
+        'fe': clean(row.get('fe')), 'zn': clean(row.get('zn')), 
+        'mn': clean(row.get('mn')), 'cu': clean(row.get('cu')), 
+        'b': clean(row.get('b')),   'mo': clean(row.get('mo')),
+        'mg': clean(row.get('mg'))
+    }
 
     # 1. ÍNDICE DE SALINIDAD (IS_v) - VALORES FIJOS Y FÓRMULA RADER
     def calcular_is(r):
@@ -49,12 +57,12 @@ def motor_baremacion_itacyl(row):
     IS_v = calcular_is(row)
 
     # 2. CLASIFICACIÓN TÉCNICA Y NOTAS FIJAS
-    # Lista de IDs SIEX autorizados para categoría [E] de forma directa
+    # IDs SIEX autorizados para categoría [E] de forma directa
     siex_e_directos = [1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 19, 20, 21, 22]
     
     # Criterio de Enmienda [E]: 
-    # IDs 15 y 16 (lodos/residuos) NO están en la lista directa, 
-    # por lo que dependen obligatoriamente de has_min (yearPercent1)
+    # Requiere dato de mineralización (yearPercent1) O estar en la lista directa.
+    # Los códigos 15 y 16 (abonos orgánicos/organominerales) requieren yearPercent1.
     has_min = not pd.isna(row.get('yearPercent1'))
     is_siex_e = materialSiexId in siex_e_directos
     
@@ -82,8 +90,7 @@ def motor_baremacion_itacyl(row):
     if organicMatter > 20: baremo += 3.0
     if s > 2 or ammoniacalN > 10: baremo += 2.0
     
-    micros_list = ['fe', 'zn', 'mn', 'cu', 'b', 'mo', 'mg']
-    tiene_micros = any(get_val(m) > 0 for m in micros_list)
+    tiene_micros = any(v > 0 for v in micros_vals.values())
     if not tiene_micros:
         kw_mic = ["QUELAT", "MICROS", "BORO", "ZINC", "HIERRO", "MANGANESO", "MAGNESIO", "MG"]
         tiene_micros = any(k in nombre for k in kw_mic)
@@ -101,49 +108,4 @@ def motor_baremacion_itacyl(row):
     val_n_eval = n if es_fondo else nitricN
     
     riesgo = "Bajo"
-    if 10 <= val_n_eval <= 20: 
-        baremo -= 1.5
-        riesgo = "Medio"
-    elif val_n_eval > 20: 
-        baremo -= 3.0
-        riesgo = "Alto"
-
-    if IS_v < 20: baremo += 1.5
-    elif 20 <= IS_v < 40: baremo += 0.5
-    elif 40 <= IS_v <= 60: baremo += 0.0
-    elif 60 < IS_v <= 80: baremo -= 0.5
-    elif 80 < IS_v <= 100: baremo -= 1.5
-    elif IS_v > 100: baremo -= 3.0
-
-    final = round(min(max(baremo, 1.0), 10.0), 1)
-    return nombre_protegido, tipo, riesgo, IS_v, str(final).replace('.', ',')
-
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            raw_json = json.loads(post_data)
-            
-            if isinstance(raw_json, dict) and 'items' in raw_json: lista = raw_json['items']
-            elif isinstance(raw_json, list): lista = raw_json
-            else: lista = [raw_json]
-
-            df = pd.DataFrame(lista)
-            res_df = df.apply(lambda r: pd.Series(motor_baremacion_itacyl(r)), axis=1)
-            res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
-            
-            output = io.BytesIO()
-            # SEPARADOR ; Y DECIMAL , PARA EXCEL ESPAÑA CON UTF-8-SIG
-            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
-            
-            self.send_response(200)
-            self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
-            self.send_header('Content-Disposition', 'attachment; filename="baremo_itacyl.csv"')
-            self.end_headers()
-            self.wfile.write(output.getvalue())
-        except Exception as e:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(f"ERROR: {str(e)}".encode('utf-8'))
+    if 10 <= val_n_eval <= 20:
