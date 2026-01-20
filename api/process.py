@@ -1,18 +1,28 @@
+from http.server import BaseHTTPRequestHandler
+import json
+import pandas as pd
+import io
+import re  # <--- CRÍTICO: Asegúrate de que esta línea esté presente
+import csv
+
 def motor_baremacion_itacyl(row):
     """
     MOTOR DE BAREMACIÓN AGRONÓMICA - ESCENARIO A
-    Versión 1.3.2 | Limpieza de caracteres (®) e Higiene de Bucle
+    Versión 1.3.2 FINAL | Fix Caracteres Especiales y Reseteo de Memoria
     """
     # 0. PREPROCESAMIENTO
     nombre_raw = str(row.get('name', '')).strip()
     if not nombre_raw or nombre_raw.lower() == 'nan': 
         nombre_raw = "PRODUCTO SIN NOMBRE"
     
-    # Normalización para búsqueda: Pasamos a Mayúsculas y quitamos símbolos como ®
-    nombre_busqueda = re.sub(r'[^\w\s]', '', nombre_raw).upper()
-    nombre = nombre_raw.upper() # Mantenemos el original para otras lógicas
-    
-    # Protección Excel con apóstrofo
+    # Normalización: Quitamos símbolos (como ®) y pasamos a mayúsculas para comparar
+    # Usamos un try/except interno por seguridad adicional
+    try:
+        nombre_busqueda = re.sub(r'[^\w\s]', '', nombre_raw).upper()
+    except:
+        nombre_busqueda = nombre_raw.upper()
+
+    nombre = nombre_raw.upper()
     nombre_protegido = f"'{nombre_raw}"
 
     def clean(val):
@@ -22,37 +32,40 @@ def motor_baremacion_itacyl(row):
             return float(val)
         except: return 0.0
 
-    # Carga de variables analíticas
-    n, p2o5, k2o = clean(row.get('n')), clean(row.get('p2o5')), clean(row.get('k2o'))
-    nitricN, ammoniacalN = clean(row.get('nitricN')), clean(row.get('ammoniacalN'))
-    organicMatter, s = clean(row.get('organicMatter')), clean(row.get('s'))
+    # Variables analíticas
+    n = clean(row.get('n'))
+    p2o5 = clean(row.get('p2o5'))
+    k2o = clean(row.get('k2o'))
+    nitricN = clean(row.get('nitricN'))
+    ammoniacalN = clean(row.get('ammoniacalN'))
+    organicMatter = clean(row.get('organicMatter'))
+    s = clean(row.get('s'))
     materialSiexId = clean(row.get('materialSiexId')) 
 
-    # 1. CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v) - HIGIENE TOTAL
-    def calcular_is_fresco(n_f, p_f, k_f, nom_b):
-        # Prioridad 1: Identificación por nombre (Valores Tabulados Rader)
-        if any(k in nom_b for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): return 15
+    # 1. CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v) - INDEPENDIENTE POR FILA
+    def calcular_is():
+        # Búsqueda sobre el nombre limpio de símbolos (nombre_busqueda)
+        if any(k in nombre_busqueda for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): return 15
         
-        # Corrección Nitratos Potásicos (74) - TECNOPLUS capturado por nom_b limpia
-        if any(k in nom_b for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]): return 74
+        # Identificación de Nitratos Potásicos (74)
+        if any(k in nombre_busqueda for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]): return 74
         
         # Nitrato Amónico puro
-        if "NITRATO AMONICO" in nom_b or "NAC" in nom_b: return 104
+        if "NITRATO AMONICO" in nombre_busqueda or "NAC" in nombre_busqueda: return 104
         
-        if "UREA" in nom_b: return 75
-        if any(k in nom_b for k in ["NITRATO DE CALCIO", "CALCINIT"]): return 85
-        if "SULFATO POTASICO" in nom_b or "SOP" in nom_b: return 46
-        if "SULFATO AMONICO" in nom_b: return 69
-        if "CLORURO" in nom_b: return 116
-        if "DAP" in nom_b: return 34
-        if "MAP" in nom_b: return 30
+        if "UREA" in nombre_busqueda: return 75
+        if any(k in nombre_busqueda for k in ["NITRATO DE CALCIO", "CALCINIT"]): return 85
+        if "SULFATO POTASICO" in nombre_busqueda or "SOP" in nombre_busqueda: return 46
+        if "SULFATO AMONICO" in nombre_busqueda: return 69
+        if "CLORURO" in nombre_busqueda: return 116
+        if "DAP" in nombre_busqueda: return 34
+        if "MAP" in nombre_busqueda: return 30
         
-        # Prioridad 2: Fórmula de Rader si no hay coincidencia
-        calc = (n_f * 1.65) + (p_f * 0.5) + (k_f * 1.9)
+        # Fallback: Fórmula de Rader
+        calc = (n * 1.65) + (p2o5 * 0.5) + (k2o * 1.9)
         return int(round(min(max(calc, 5), 140)))
 
-    # Asignación limpia del valor usando la versión "limpia" del nombre
-    IS_v = calcular_is_fresco(n, p2o5, k2o, nombre_busqueda)
+    IS_v = calcular_is()
 
     # 2. CLASIFICACIÓN TÉCNICA
     siex_e_directos = [1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 19, 20, 21, 22]
@@ -68,6 +81,7 @@ def motor_baremacion_itacyl(row):
     elif es_cob: tipo = "[C,R]" if is_liq else "[C]"
     else: tipo = "[R]" if is_liq else "[F]"
 
+    # Tecnologías
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR"]
     es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
     
@@ -115,3 +129,5 @@ def motor_baremacion_itacyl(row):
 
     final = round(min(max(baremo, 1.0), 10.0), 1)
     return nombre_protegido, tipo, riesgo, IS_v, str(final).replace('.', ',')
+
+# --- EL HANDLER SIGUE IGUAL ABAJO ---
