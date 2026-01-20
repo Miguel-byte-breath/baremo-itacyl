@@ -6,7 +6,7 @@ import io
 def motor_baremacion_itacyl(row):
     """
     MOTOR DE BAREMACIÓN AGRONÓMICA - ESCENARIO A
-    Versión 1.3.4 | FINAL | Fix TECNOPLUS® e Higiene de Bucle
+    Versión 1.3.5 | Blindaje Anti-Memoria y Fix Is
     """
     # 0. PREPROCESAMIENTO
     nombre_raw = str(row.get('name', '')).strip()
@@ -14,7 +14,6 @@ def motor_baremacion_itacyl(row):
         nombre_raw = "PRODUCTO SIN NOMBRE"
     
     nombre = nombre_raw.upper()
-    # Protección Excel con apóstrofo
     nombre_protegido = f"'{nombre_raw}"
 
     def clean(val):
@@ -24,7 +23,7 @@ def motor_baremacion_itacyl(row):
             return float(val)
         except: return 0.0
 
-    # Carga de variables analíticas
+    # Carga de variables analíticas (Reset total en cada fila)
     n = clean(row.get('n'))
     p2o5 = clean(row.get('p2o5'))
     k2o = clean(row.get('k2o'))
@@ -32,32 +31,34 @@ def motor_baremacion_itacyl(row):
     ammoniacalN = clean(row.get('ammoniacalN'))
     organicMatter = clean(row.get('organicMatter'))
     s = clean(row.get('s'))
-    materialSiexId = clean(row.get('materialSiexId')) 
+    materialSiexId = clean(row.get('materialSiexId'))
 
-    # 1. CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v)
-    def calcular_is():
-        # Identificación por nombre (Valores Tabulados Rader)
-        # El operador 'in' captura TECNOPLUS aunque lleve el símbolo ®
-        if any(k in nombre for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): return 15
-        
-        if any(k in nombre for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]): 
-            return 74
-        
-        if "NITRATO AMONICO" in nombre or "NAC" in nombre: return 104
-        if "UREA" in nombre: return 75
-        if "NITRATO DE CALCIO" in nombre or "CALCINIT" in nombre: return 85
-        if "SULFATO POTASICO" in nombre or "SOP" in nombre: return 46
-        if "SULFATO AMONICO" in nombre: return 69
-        if "CLORURO" in nombre: return 116
-        if "DAP" in nombre: return 34
-        if "MAP" in nombre: return 30
-        
-        # Fórmula de Rader si no hay coincidencia por nombre
+    # 1. CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v) - LÓGICA DIRECTA SIN ANIDAR
+    # Primero buscamos coincidencias exactas por nombre
+    if any(k in nombre for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]):
+        IS_v = 15
+    elif any(k in nombre for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]):
+        IS_v = 74
+    elif "NITRATO AMONICO" in nombre or "NAC" in nombre:
+        IS_v = 104
+    elif "UREA" in nombre:
+        IS_v = 75
+    elif "NITRATO DE CALCIO" in nombre or "CALCINIT" in nombre:
+        IS_v = 85
+    elif "SULFATO POTASICO" in nombre or "SOP" in nombre:
+        IS_v = 46
+    elif "SULFATO AMONICO" in nombre:
+        IS_v = 69
+    elif "CLORURO" in nombre:
+        IS_v = 116
+    elif "DAP" in nombre:
+        IS_v = 34
+    elif "MAP" in nombre:
+        IS_v = 30
+    else:
+        # Si no hay nombre clave, usamos fórmula de Rader pura con los datos de ESTA fila
         calc = (n * 1.65) + (p2o5 * 0.5) + (k2o * 1.9)
-        return int(round(min(max(calc, 5), 140)))
-
-    # Forzamos ejecución fresca por cada fila para evitar el "efecto memoria"
-    IS_v = calcular_is()
+        IS_v = int(round(min(max(calc, 5), 140)))
 
     # 2. CLASIFICACIÓN TÉCNICA
     siex_e_directos = [1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 19, 20, 21, 22]
@@ -73,6 +74,7 @@ def motor_baremacion_itacyl(row):
     elif es_cob: tipo = "[C,R]" if is_liq else "[C]"
     else: tipo = "[R]" if is_liq else "[F]"
 
+    # Tecnologías e Inhibidores
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR"]
     es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
     
@@ -97,7 +99,7 @@ def motor_baremacion_itacyl(row):
     if p2o5 > 15: baremo += 1.0
     if k2o > 15: baremo += 1.0
 
-    # 4. PENALIZACIONES
+    # 4. PENALIZACIONES (ZVN y Salinidad)
     es_fondo = (not es_cob) and (not es_enm)
     val_n_eval = n if es_fondo else nitricN
     riesgo = "Bajo"
@@ -130,7 +132,7 @@ class handler(BaseHTTPRequestHandler):
             else: lista = [raw_json]
 
             df = pd.DataFrame(lista)
-            # result_type='expand' para evitar errores de una sola fila
+            # Aplicamos la función y forzamos la creación de un nuevo DF de resultados
             res_df = df.apply(lambda r: pd.Series(motor_baremacion_itacyl(r)), axis=1)
             res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
             
