@@ -106,7 +106,7 @@ def motor_baremacion_itacyl(row):
     elif is_v > 100: baremo -= 3.0
 
     final = round(min(max(baremo, 1.0), 10.0), 1)
-    return f'="{nombre_raw}"', tipo, riesgo, is_v, str(final).replace('.', ',')
+    return f'\u200b{nombre_raw}', tipo, riesgo, is_v, str(final).replace('.', ',')
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
