@@ -8,7 +8,7 @@ import csv
 def motor_baremacion_itacyl(row):
     """
     MOTOR DE BAREMACIÓN AGRONÓMICA - ESCENARIO A
-    Versión 1.3.1 Final (20/01/2026) - Protección Total Anti-Fechas Excel
+    Versión 1.3.1 FINAL - Protección de Datos Nivel 4 (Tab Invisible)
     """
     # 0. PREPROCESAMIENTO
     nombre_raw = str(row.get('name', '')).strip()
@@ -42,7 +42,7 @@ def motor_baremacion_itacyl(row):
         val_calc = (n * 1.65) + (p2o5 * 0.5) + (k2o * 1.9)
         is_v = int(round(min(max(val_calc, 5), 140)))
 
-    # 2. CLASIFICACIÓN TÉCNICA Y NOTAS FIJAS
+    # 2. CLASIFICACIÓN TÉCNICA
     es_enmienda = (not pd.isna(row.get('yearPercent1'))) or (materialSiexId == 13)
     es_cobertera = row.get('topDressing') is True
     is_liquid = row.get('aggregateState') == 'L' or "SOLUB" in nombre
@@ -56,19 +56,21 @@ def motor_baremacion_itacyl(row):
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR"]
     es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
     
+    # EL GRAN TRUCO: Añadimos \t (Tabulador) al inicio de nombre_raw
+    # Esto fuerza a Excel a tratar la celda como TEXTO sin mostrar caracteres raros.
+    nombre_protegido = f"\t{nombre_raw}"
+
     if es_enmienda or es_tec or any(k in nombre for k in kw_inh):
-        # PROTECCIÓN EXCEL: Prefijo de apóstrofo (') para forzar texto
-        return f"'{nombre_raw}", tipo, "Bajo", is_v, "10,0"
+        return nombre_protegido, tipo, "Bajo", is_v, "10,0"
     
     if tipo == "[C,R]" and any(k in nombre for k in ["NITRATO DE CALCIO", "CALCINIT", "SOLUTECK"]):
-        return f"'{nombre_raw}", tipo, "Medio", is_v, "9,5"
+        return nombre_protegido, tipo, "Medio", is_v, "9,5"
 
     # 3. ALGORITMO ACUMULATIVO (Base 6.0)
     baremo = 6.0
     if organicMatter > 20: baremo += 3.0
     if s > 2 or ammoniacalN > 10: baremo += 2.0
     
-    # Bonus Micros/Mg
     micros_list = ['fe', 'zn', 'mn', 'cu', 'b', 'mo', 'mg']
     tiene_micros = any(get_val(m) > 0 for m in micros_list)
     if not tiene_micros:
@@ -76,14 +78,13 @@ def motor_baremacion_itacyl(row):
         tiene_micros = any(k in nombre for k in kw_micros)
     if tiene_micros: baremo += 1.5
 
-    # Bonus P/K (Doble Validación)
     npk_match = re.search(r'(\d+)-(\d+)-(\d+)', nombre)
     if p2o5 > 15: baremo += 1.0
     elif p2o5 == 0 and npk_match and float(npk_match.group(2)) > 15: baremo += 1.0
     if k2o > 15: baremo += 1.0
     elif k2o == 0 and npk_match and float(npk_match.group(3)) > 15: baremo += 1.0
 
-    # 4. PENALIZACIONES (ZVN 10%)
+    # 4. PENALIZACIONES
     es_fondo = (not es_cobertera) and (not es_enmienda)
     val_n_eval = n if es_fondo else nitricN
     riesgo = "Bajo"
@@ -94,7 +95,6 @@ def motor_baremacion_itacyl(row):
         baremo -= 3.0
         riesgo = "Alto"
 
-    # Matriz Salinidad (6 niveles)
     if is_v < 20: baremo += 1.5
     elif 20 <= is_v < 40: baremo += 0.5
     elif 40 <= is_v <= 60: baremo += 0.0
@@ -103,9 +103,7 @@ def motor_baremacion_itacyl(row):
     elif is_v > 100: baremo -= 3.0
 
     final = round(min(max(baremo, 1.0), 10.0), 1)
-    
-    # Retornamos el nombre con el prefijo protector para Excel
-    return f"'{nombre_raw}", tipo, riesgo, is_v, str(final).replace('.', ',')
+    return nombre_protegido, tipo, riesgo, is_v, str(final).replace('.', ',')
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -123,8 +121,8 @@ class handler(BaseHTTPRequestHandler):
             res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
             
             output = io.BytesIO()
-            # Usamos sep=';' y quoting=csv.QUOTE_MINIMAL para asegurar la compatibilidad con Excel España
-            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
+            # SEPARADOR ; Y DECIMAL , PARA EXCEL ESPAÑA
+            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
             
             self.send_response(200)
             self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
