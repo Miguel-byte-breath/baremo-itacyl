@@ -1,20 +1,16 @@
-from http.server import BaseHTTPRequestHandler
-import json
-import pandas as pd
-import io
-import re
-import csv
-
 def motor_baremacion_itacyl(row):
     """
     MOTOR DE BAREMACIÓN AGRONÓMICA - ESCENARIO A
-    Versión 1.3.2 | Corrección IS Nitratos Potásicos e Higiene de Bucle
+    Versión 1.3.2 | Limpieza de caracteres (®) e Higiene de Bucle
     """
     # 0. PREPROCESAMIENTO
     nombre_raw = str(row.get('name', '')).strip()
     if not nombre_raw or nombre_raw.lower() == 'nan': 
         nombre_raw = "PRODUCTO SIN NOMBRE"
-    nombre = nombre_raw.upper()
+    
+    # Normalización para búsqueda: Pasamos a Mayúsculas y quitamos símbolos como ®
+    nombre_busqueda = re.sub(r'[^\w\s]', '', nombre_raw).upper()
+    nombre = nombre_raw.upper() # Mantenemos el original para otras lógicas
     
     # Protección Excel con apóstrofo
     nombre_protegido = f"'{nombre_raw}"
@@ -32,32 +28,31 @@ def motor_baremacion_itacyl(row):
     organicMatter, s = clean(row.get('organicMatter')), clean(row.get('s'))
     materialSiexId = clean(row.get('materialSiexId')) 
 
-    # 1. CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v) - RESET TOTAL EN CADA FILA
-    def calcular_is_fresco(n_f, p_f, k_f, nom_f):
+    # 1. CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v) - HIGIENE TOTAL
+    def calcular_is_fresco(n_f, p_f, k_f, nom_b):
         # Prioridad 1: Identificación por nombre (Valores Tabulados Rader)
-        if any(k in nom_f for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): return 15
+        if any(k in nom_b for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): return 15
         
-        # Corrección Nitratos Potásicos (74)
-        if any(k in nom_f for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]): return 74
+        # Corrección Nitratos Potásicos (74) - TECNOPLUS capturado por nom_b limpia
+        if any(k in nom_b for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]): return 74
         
-        # Nitrato Amónico puro (Solo si es la referencia de alta concentración)
-        if "NITRATO AMONICO" in nom_f or "NAC" in nom_f: return 104
+        # Nitrato Amónico puro
+        if "NITRATO AMONICO" in nom_b or "NAC" in nom_b: return 104
         
-        if "UREA" in nom_f: return 75
-        if any(k in nom_f for k in ["NITRATO DE CALCIO", "CALCINIT"]): return 85
-        if "NITRATO DE POTASIO" in nom_f: return 74
-        if "SULFATO POTASICO" in nom_f or "SOP" in nom_f: return 46
-        if "SULFATO AMONICO" in nom_f: return 69
-        if "CLORURO" in nom_f: return 116
-        if "DAP" in nom_f: return 34
-        if "MAP" in nom_f: return 30
+        if "UREA" in nom_b: return 75
+        if any(k in nom_b for k in ["NITRATO DE CALCIO", "CALCINIT"]): return 85
+        if "SULFATO POTASICO" in nom_b or "SOP" in nom_b: return 46
+        if "SULFATO AMONICO" in nom_b: return 69
+        if "CLORURO" in nom_b: return 116
+        if "DAP" in nom_b: return 34
+        if "MAP" in nom_b: return 30
         
-        # Prioridad 2: Fórmula de Rader si no hay coincidencia por nombre
+        # Prioridad 2: Fórmula de Rader si no hay coincidencia
         calc = (n_f * 1.65) + (p_f * 0.5) + (k_f * 1.9)
         return int(round(min(max(calc, 5), 140)))
 
-    # Asignación limpia del valor
-    IS_v = calcular_is_fresco(n, p2o5, k2o, nombre)
+    # Asignación limpia del valor usando la versión "limpia" del nombre
+    IS_v = calcular_is_fresco(n, p2o5, k2o, nombre_busqueda)
 
     # 2. CLASIFICACIÓN TÉCNICA
     siex_e_directos = [1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 19, 20, 21, 22]
@@ -120,26 +115,3 @@ def motor_baremacion_itacyl(row):
 
     final = round(min(max(baremo, 1.0), 10.0), 1)
     return nombre_protegido, tipo, riesgo, IS_v, str(final).replace('.', ',')
-
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            raw_json = json.loads(post_data)
-            lista = raw_json['items'] if isinstance(raw_json, dict) and 'items' in raw_json else raw_json
-            df = pd.DataFrame(lista)
-            res_df = df.apply(lambda r: motor_baremacion_itacyl(r), axis=1, result_type='expand')
-            res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
-            output = io.BytesIO()
-            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
-            self.send_response(200)
-            self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
-            self.send_header('Content-Disposition', 'attachment; filename="baremo.csv"')
-            self.end_headers()
-            self.wfile.write(output.getvalue())
-        except Exception as e:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(f"ERROR: {str(e)}".encode('utf-8'))
