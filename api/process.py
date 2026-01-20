@@ -7,7 +7,7 @@ import re
 def motor_baremacion_itacyl(row):
     """
     MOTOR DE BAREMACIÓN AGRONÓMICA - ESCENARIO A
-    Versión 1.3 Final (20/01/2026)
+    Versión 1.3 Final (20/01/2026) - Protección de Formato Excel
     """
     # 0. PREPROCESAMIENTO
     nombre_raw = str(row.get('name', '')).strip()
@@ -44,7 +44,7 @@ def motor_baremacion_itacyl(row):
         val_calc = (n * 1.65) + (p2o5 * 0.5) + (k2o * 1.9)
         is_v = int(round(min(max(val_calc, 5), 140)))
 
-    # 2. CLASIFICACIÓN TÉCNICA [E, C,R, C, R, F]
+    # 2. CLASIFICACIÓN TÉCNICA
     es_enmienda = not pd.isna(row.get('yearPercent1'))
     es_cobertera = row.get('topDressing') is True
     is_liquid = row.get('aggregateState') == 'L' or "SOLUB" in nombre
@@ -54,7 +54,7 @@ def motor_baremacion_itacyl(row):
     elif es_cobertera: tipo = "[C,R]" if is_liquid else "[C]"
     else: tipo = "[R]" if is_liquid else "[F]"
 
-    # 3. NOTAS FIJAS (Inhibidores y Floculantes)
+    # 3. NOTAS FIJAS
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR"]
     es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
     
@@ -69,7 +69,6 @@ def motor_baremacion_itacyl(row):
     if organicMatter > 20: baremo += 3.0
     if s > 2 or ammoniacalN > 10: baremo += 2.0
     
-    # Bonus Micro / Mg (Variable > Semántica)
     micros_list = ['fe', 'zn', 'mn', 'cu', 'b', 'mo', 'mg']
     tiene_micros = any(get_val(m) > 0 for m in micros_list)
     if not tiene_micros:
@@ -77,19 +76,15 @@ def motor_baremacion_itacyl(row):
         tiene_micros = any(k in nombre for k in kw_micros)
     if tiene_micros: baremo += 1.5
 
-    # Bonus P / K (Variable > Semántica Regex)
     npk_match = re.search(r'(\d+)-(\d+)-(\d+)', nombre)
-    # Fósforo
     if p2o5 > 15: baremo += 1.0
     elif p2o5 == 0 and npk_match and float(npk_match.group(2)) > 15: baremo += 1.0
-    # Potasio
     if k2o > 15: baremo += 1.0
     elif k2o == 0 and npk_match and float(npk_match.group(3)) > 15: baremo += 1.0
 
-    # 5. PENALIZACIONES (ZVN 10% y Salinidad 6 niveles)
+    # 5. PENALIZACIONES
     es_fondo = (not es_cobertera) and (not es_enmienda)
     val_n_eval = n if es_fondo else nitricN
-    
     riesgo = "Bajo"
     if 10 <= val_n_eval <= 20: 
         baremo -= 1.5
@@ -106,7 +101,10 @@ def motor_baremacion_itacyl(row):
     elif is_v > 100: baremo -= 3.0
 
     final = round(min(max(baremo, 1.0), 10.0), 1)
-    return f'\u200b{nombre_raw}', tipo, riesgo, is_v, str(final).replace('.', ',')
+    
+    # TRUCO FINAL PARA EXCEL: Usamos formato de fórmula ="valor" 
+    # Esto impide que 05-08-18 sea 05/08/2018
+    return f'="{nombre_raw}"', tipo, riesgo, is_v, str(final).replace('.', ',')
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -115,20 +113,17 @@ class handler(BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length)
             raw_json = json.loads(post_data)
             
-            # Normalizar entrada a lista de diccionarios
-            if isinstance(raw_json, dict) and 'items' in raw_json:
-                lista = raw_json['items']
-            elif isinstance(raw_json, list):
-                lista = raw_json
-            else:
-                lista = [raw_json]
+            if isinstance(raw_json, dict) and 'items' in raw_json: lista = raw_json['items']
+            elif isinstance(raw_json, list): lista = raw_json
+            else: lista = [raw_json]
 
             df = pd.DataFrame(lista)
             res_df = df.apply(lambda r: pd.Series(motor_baremacion_itacyl(r)), axis=1)
             res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
             
             output = io.BytesIO()
-            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
+            # El separador punto y coma es clave para Excel en España
+            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig', quoting=0)
             
             self.send_response(200)
             self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
