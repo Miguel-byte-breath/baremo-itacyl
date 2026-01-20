@@ -3,11 +3,12 @@ import json
 import pandas as pd
 import io
 import re
+import csv
 
 def motor_baremacion_itacyl(row):
     """
     MOTOR DE BAREMACIÓN AGRONÓMICA - ESCENARIO A
-    Versión 1.3.1 Final (20/01/2026) - Criterio SIEX 13 e Identidad de Texto
+    Versión 1.3.1 Final (20/01/2026) - Protección Total Anti-Fechas Excel
     """
     # 0. PREPROCESAMIENTO
     nombre_raw = str(row.get('name', '')).strip()
@@ -24,7 +25,7 @@ def motor_baremacion_itacyl(row):
     n, p2o5, k2o = get_val('n'), get_val('p2o5'), get_val('k2o')
     nitricN, ammoniacalN = get_val('nitricN'), get_val('ammoniacalN')
     organicMatter, s = get_val('organicMatter'), get_val('s')
-    materialSiexId = get_val('materialSiexId') # Variable normativa
+    materialSiexId = get_val('materialSiexId') 
 
     # 1. ÍNDICE DE SALINIDAD (IS_VALOR)
     if any(k in nombre for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): is_v = 15
@@ -51,22 +52,23 @@ def motor_baremacion_itacyl(row):
     elif es_cobertera: tipo = "[C,R]" if is_liquid else "[C]"
     else: tipo = "[R]" if is_liquid else "[F]"
 
-    # Verificación de Tecnologías de Estabilización
+    # Tecnologías e Inhibidores
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR"]
     es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
     
     if es_enmienda or es_tec or any(k in nombre for k in kw_inh):
-        return f'="{nombre_raw}"', tipo, "Bajo", is_v, "10,0"
+        # PROTECCIÓN EXCEL: Prefijo de apóstrofo (') para forzar texto
+        return f"'{nombre_raw}", tipo, "Bajo", is_v, "10,0"
     
     if tipo == "[C,R]" and any(k in nombre for k in ["NITRATO DE CALCIO", "CALCINIT", "SOLUTECK"]):
-        return f'="{nombre_raw}"', tipo, "Medio", is_v, "9,5"
+        return f"'{nombre_raw}", tipo, "Medio", is_v, "9,5"
 
     # 3. ALGORITMO ACUMULATIVO (Base 6.0)
     baremo = 6.0
     if organicMatter > 20: baremo += 3.0
     if s > 2 or ammoniacalN > 10: baremo += 2.0
     
-    # Bonus Micros/Mg (Prioridad Analítica)
+    # Bonus Micros/Mg
     micros_list = ['fe', 'zn', 'mn', 'cu', 'b', 'mo', 'mg']
     tiene_micros = any(get_val(m) > 0 for m in micros_list)
     if not tiene_micros:
@@ -74,14 +76,14 @@ def motor_baremacion_itacyl(row):
         tiene_micros = any(k in nombre for k in kw_micros)
     if tiene_micros: baremo += 1.5
 
-    # Bonus P/K (Sistema de Doble Validación)
+    # Bonus P/K (Doble Validación)
     npk_match = re.search(r'(\d+)-(\d+)-(\d+)', nombre)
     if p2o5 > 15: baremo += 1.0
     elif p2o5 == 0 and npk_match and float(npk_match.group(2)) > 15: baremo += 1.0
     if k2o > 15: baremo += 1.0
     elif k2o == 0 and npk_match and float(npk_match.group(3)) > 15: baremo += 1.0
 
-    # 4. PENALIZACIONES
+    # 4. PENALIZACIONES (ZVN 10%)
     es_fondo = (not es_cobertera) and (not es_enmienda)
     val_n_eval = n if es_fondo else nitricN
     riesgo = "Bajo"
@@ -92,7 +94,7 @@ def motor_baremacion_itacyl(row):
         baremo -= 3.0
         riesgo = "Alto"
 
-    # Matriz Salinidad Cis (6 Rangos)
+    # Matriz Salinidad (6 niveles)
     if is_v < 20: baremo += 1.5
     elif 20 <= is_v < 40: baremo += 0.5
     elif 40 <= is_v <= 60: baremo += 0.0
@@ -101,7 +103,9 @@ def motor_baremacion_itacyl(row):
     elif is_v > 100: baremo -= 3.0
 
     final = round(min(max(baremo, 1.0), 10.0), 1)
-    return f'="{nombre_raw}"', tipo, riesgo, is_v, str(final).replace('.', ',')
+    
+    # Retornamos el nombre con el prefijo protector para Excel
+    return f"'{nombre_raw}", tipo, riesgo, is_v, str(final).replace('.', ',')
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -110,19 +114,17 @@ class handler(BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length)
             raw_json = json.loads(post_data)
             
-            if isinstance(raw_json, dict) and 'items' in raw_json:
-                lista = raw_json['items']
-            elif isinstance(raw_json, list):
-                lista = raw_json
-            else:
-                lista = [raw_json]
+            if isinstance(raw_json, dict) and 'items' in raw_json: lista = raw_json['items']
+            elif isinstance(raw_json, list): lista = raw_json
+            else: lista = [raw_json]
 
             df = pd.DataFrame(lista)
             res_df = df.apply(lambda r: pd.Series(motor_baremacion_itacyl(r)), axis=1)
             res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
             
             output = io.BytesIO()
-            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
+            # Usamos sep=';' y quoting=csv.QUOTE_MINIMAL para asegurar la compatibilidad con Excel España
+            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
             
             self.send_response(200)
             self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
