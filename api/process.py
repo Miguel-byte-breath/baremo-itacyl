@@ -108,4 +108,48 @@ def motor_baremacion_itacyl(row):
     val_n_eval = n if es_fondo else nitricN
     
     riesgo = "Bajo"
-    if 10 <= val_n_eval <= 20:
+    if 10 <= val_n_eval <= 20: 
+        baremo -= 1.5
+        riesgo = "Medio"
+    elif val_n_eval > 20: 
+        baremo -= 3.0
+        riesgo = "Alto"
+
+    if IS_v < 20: baremo += 1.5
+    elif 20 <= IS_v < 40: baremo += 0.5
+    elif 40 <= IS_v <= 60: baremo += 0.0
+    elif 60 < IS_v <= 80: baremo -= 0.5
+    elif 80 < IS_v <= 100: baremo -= 1.5
+    elif IS_v > 100: baremo -= 3.0
+
+    final = round(min(max(baremo, 1.0), 10.0), 1)
+    return nombre_protegido, tipo, riesgo, IS_v, str(final).replace('.', ',')
+
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            raw_json = json.loads(post_data)
+            
+            if isinstance(raw_json, dict) and 'items' in raw_json: lista = raw_json['items']
+            elif isinstance(raw_json, list): lista = raw_json
+            else: lista = [raw_json]
+
+            df = pd.DataFrame(lista)
+            res_df = df.apply(lambda r: pd.Series(motor_baremacion_itacyl(r)), axis=1)
+            res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
+            
+            output = io.BytesIO()
+            res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
+            self.send_header('Content-Disposition', 'attachment; filename="baremo_itacyl.csv"')
+            self.end_headers()
+            self.wfile.write(output.getvalue())
+        except Exception as e:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(f"ERROR: {str(e)}".encode('utf-8'))
