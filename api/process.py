@@ -6,21 +6,13 @@ import re
 
 def motor_baremacion_itacyl(row):
     """
-    SISTEMA DE BAREMACIÓN AGRONÓMICA AUTOMATIZADO - Versión 1.5.0 (Consolidada)
+    SISTEMA DE BAREMACIÓN AGRONÓMICA AUTOMATIZADO - Versión 1.5.0 (Consolidada Final)
     Fecha: 21/01/2026 | Escenario A: Suelos Francos y Arcillosos
-    
-    FIXES INCORPORADOS:
-    1. Nitrato de Calcio: Protección directa 9,5 en usos [C], [R] o [C,R].
-    2. Excepción IS: Nitramon y Nitrosulf (n=27) evitan el 104 y pasan a Rader (umbral n > 33).
-    3. Encoding: Normalización de caracteres rotos del Excel (Ã¡, etc.).
     """
     
-    # -------------------------------------------------------------------------
-    # FASE 0: PREPROCESAMIENTO, ENCODING Y PROTECCIÓN ANTI-EXCEL
-    # -------------------------------------------------------------------------
+    # 0. FASE DE LIMPIEZA Y ENCODING
     def fix_encoding(text):
         try:
-            # Repara caracteres rotos comunes en exportaciones CSV/Excel (ej. Ã¡ -> á)
             return text.encode('latin-1').decode('utf-8')
         except:
             return text
@@ -30,10 +22,9 @@ def motor_baremacion_itacyl(row):
         nombre_raw = "PRODUCTO SIN NOMBRE"
     
     nombre = nombre_raw.upper()
-    nombre_protegido = f"'{nombre_raw}" # Fuerza interpretación como texto en Excel
+    nombre_protegido = f"'{nombre_raw}" # Protección Anti-Excel
 
     def clean(val):
-        """Asegura el tipado float y corrige formatos decimales regionales."""
         if pd.isna(val) or val is None: return 0.0
         try:
             if isinstance(val, str): val = val.replace(',', '.')
@@ -57,20 +48,14 @@ def motor_baremacion_itacyl(row):
         'mg': clean(row.get('mg'))
     }
 
-    # -------------------------------------------------------------------------
-    # FASE I: CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v) - METODOLOGÍA RADER
-    # -------------------------------------------------------------------------
+    # 1. CÁLCULO DEL ÍNDICE DE SALINIDAD (IS_v)
     def calcular_is():
-        # FIX 2: Excepción para evitar el 104 en Nitramon y Nitrosulf
-        # Añadimos variantes con tildes para que la semántica no falle
-        es_excepcion_marca = any(k in nombre for k in ["NITRAMON", "NITRAMÓN", "NITROSULF", "NITROSÚLF"])
+        # Excepción para evitar el 104 en Nitramon y Nitrosulf
+        es_excepcion_marca = any(k in nombre for k in ["NITRAMON", "NITROSULF"])
         
-        # Asignación de valores fijos para sustancias de referencia
-        if any(k in nombre for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): return 15
         if any(k in nombre for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]): return 74
         
-        # AJUSTE CRÍTICO: El umbral sube de 25 a 33. 
-        # El Nitrato Amónico puro (33.5% N) recibe 104. El NAC 27 (Nitramon) pasa a cálculo Rader.
+        # Umbral sube a 33 para proteger a los NAC 27 del valor 104
         if not es_excepcion_marca:
             if ("NITRATO AMONICO" in nombre or "NAC" in nombre) and n > 33: return 104
             
@@ -82,15 +67,13 @@ def motor_baremacion_itacyl(row):
         if "DAP" in nombre: return 34
         if "MAP" in nombre: return 30
         
-        # Cálculo estequiométrico para el resto (incluyendo NAC 27 y excepciones)
+        # Cálculo estequiométrico Rader
         calc = (n * 1.65) + (p2o5 * 0.5) + (k2o * 1.9)
         return int(round(min(max(calc, 5), 140)))
 
     IS_v = calcular_is()
 
-    # -------------------------------------------------------------------------
-    # FASE II: CLASIFICACIÓN TÉCNICA Y NOTAS FIJAS
-    # -------------------------------------------------------------------------
+    # 2. CLASIFICACIÓN TÉCNICA
     siex_e_directos = [1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 19, 20, 21, 22]
     has_min = not pd.isna(row.get('yearPercent1'))
     is_siex_e = materialSiexId in siex_e_directos
@@ -99,50 +82,33 @@ def motor_baremacion_itacyl(row):
     es_cob = row.get('topDressing') is True
     es_riego = row.get('diluted') is True or row.get('aggregateState') == 'L' or "SOLUB" in nombre
 
-    # Asignación de Etiquetas de Uso
-    if es_enm: 
-        tipo = "[E]"
-    elif es_cob: 
-        tipo = "[C,R]" if es_riego else "[C]"
-    else: 
-        tipo = "[R]" if es_riego else "[F]"
+    if es_enm: tipo = "[E]"
+    elif es_cob: tipo = "[C,R]" if es_riego else "[C]"
+    else: tipo = "[R]" if es_riego else "[F]"
 
-    # BYPASS DE EXCELENCIA (10,0)
+    # 3. BAREMO - BYPASS DE EXCELENCIA E INHIBIDORES (10,0)
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR", "RHIZOVIT", "EXCELIS"]
-    es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
-    
-    if es_enm or es_tec or any(k in nombre for k in kw_inh):
+    if es_enm or row.get('nitrificationInhibitor') or row.get('ureaseInhibitor') or any(k in nombre for k in kw_inh):
         return nombre_protegido, tipo, "Bajo", IS_v, "10,0"
 
-    # FIX 1: NITRATOS DE CALCIO (9,5)
-    es_nitrato_calcio = any(k in nombre for k in ["NITRATO DE CALCIO", "SOLUTECK", "CALCINIT", "CALCILIQ"]) or \
-                        ("TECNOPLUS" in nombre and "CALCIO" in nombre)
-    
-    if es_nitrato_calcio and any(t in tipo for t in ["[C]", "[R]"]):
+    # PROTECCIÓN NITRATOS DE CALCIO Y ESPECIALIDADES (9,5)
+    # Lista ampliada para incluir Tecnoplus y variantes líquidas
+    kw_calcio = ["NITRATO DE CALCIO", "CALCINIT", "CALCILIQ", "TECNOPLUS", "SOLUTECK"]
+    if any(k in nombre for k in kw_calcio) and tipo != "[F]":
         return nombre_protegido, tipo, "Medio", IS_v, "9,5"
 
-    # -------------------------------------------------------------------------
-    # FASE III: ALGORITMO ACUMULATIVO
-    # -------------------------------------------------------------------------
+    # 4. LÓGICA ACUMULATIVA (Base 6.0)
     baremo = 6.0
     if organicMatter > 20: baremo += 3.0
     if s > 2 or ammoniacalN > 10: baremo += 2.0
     
-    tiene_micros = any(v > 0 for v in micros_vals.values())
-    if not tiene_micros:
-        kw_mic = ["QUELAT", "MICROS", "BORO", "ZINC", "HIERRO", "MANGANESO", "MAGNESIO", "MG"]
-        tiene_micros = any(k in nombre for k in kw_mic)
-    if tiene_micros: baremo += 1.5
-
+    has_mic = any(v > 0 for v in micros_vals.values()) or any(k in nombre for k in ["QUELAT", "MICROS", "MG"])
+    if has_mic: baremo += 1.5
     if p2o5 > 7: baremo += 1.0
     if k2o > 7: baremo += 1.0
 
-    # -------------------------------------------------------------------------
-    # FASE IV: PENALIZACIONES (ZVN Y MATRIZ SALINA)
-    # -------------------------------------------------------------------------
-    es_fondo = (tipo == "[F]")
-    val_n_eval = n if es_fondo else nitricN
-    
+    # 5. PENALIZACIONES (ZVN Y SALINIDAD)
+    val_n_eval = n if tipo == "[F]" else nitricN
     riesgo = "Bajo"
     if 10 <= val_n_eval <= 20:
         baremo -= 1.5
@@ -153,14 +119,10 @@ def motor_baremacion_itacyl(row):
 
     if IS_v < 20: baremo += 1.5
     elif 20 <= IS_v < 40: baremo += 0.5
-    elif 40 <= IS_v <= 60: baremo += 0.0
     elif 60 < IS_v <= 80: baremo -= 0.5
     elif 80 < IS_v <= 100: baremo -= 1.5
     elif IS_v > 100: baremo -= 3.0
 
-    # -------------------------------------------------------------------------
-    # FASE V: NORMALIZACIÓN Y SALIDA
-    # -------------------------------------------------------------------------
     final = round(min(max(baremo, 1.0), 10.0), 1)
     return nombre_protegido, tipo, riesgo, IS_v, str(final).replace('.', ',')
 
@@ -178,7 +140,7 @@ class handler(BaseHTTPRequestHandler):
             res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
             self.send_response(200)
             self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
-            self.send_header('Content-Disposition', 'attachment; filename="baremo_consolidado_v150.csv"')
+            self.send_header('Content-Disposition', 'attachment; filename="baremo_v150_final.csv"')
             self.end_headers()
             self.wfile.write(output.getvalue())
         except Exception as e:
