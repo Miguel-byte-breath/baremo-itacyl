@@ -11,7 +11,7 @@ def motor_baremacion_itacyl(row):
     
     FIXES INCORPORADOS:
     1. Nitrato de Calcio: Protección directa 9,5 en usos [C], [R] o [C,R].
-    2. Excepción IS: Nitramon y Nitrosulf evitan el 104 y pasan a cálculo Rader.
+    2. Excepción IS: Nitramon y Nitrosulf (n=27) evitan el 104 y pasan a Rader (umbral n > 33).
     3. Encoding: Normalización de caracteres rotos del Excel (Ã¡, etc.).
     """
     
@@ -30,7 +30,7 @@ def motor_baremacion_itacyl(row):
         nombre_raw = "PRODUCTO SIN NOMBRE"
     
     nombre = nombre_raw.upper()
-    nombre_protegido = f"'{nombre_raw}" # Fuerza interpretación como texto
+    nombre_protegido = f"'{nombre_raw}" # Fuerza interpretación como texto en Excel
 
     def clean(val):
         """Asegura el tipado float y corrige formatos decimales regionales."""
@@ -62,14 +62,17 @@ def motor_baremacion_itacyl(row):
     # -------------------------------------------------------------------------
     def calcular_is():
         # FIX 2: Excepción para evitar el 104 en Nitramon y Nitrosulf
-        es_excepcion_marca = any(k in nombre for k in ["NITRAMON", "NITROSULF"])
+        # Añadimos variantes con tildes para que la semántica no falle
+        es_excepcion_marca = any(k in nombre for k in ["NITRAMON", "NITRAMÓN", "NITROSULF", "NITROSÚLF"])
         
         # Asignación de valores fijos para sustancias de referencia
         if any(k in nombre for k in ["COMPOST", "ESTIERCOL", "HUMUS", "ORGANIC"]): return 15
         if any(k in nombre for k in ["NITRATO POTASICO", "NIPO", "TECNOPLUS"]): return 74
         
+        # AJUSTE CRÍTICO: El umbral sube de 25 a 33. 
+        # El Nitrato Amónico puro (33.5% N) recibe 104. El NAC 27 (Nitramon) pasa a cálculo Rader.
         if not es_excepcion_marca:
-            if ("NITRATO AMONICO" in nombre or "NAC" in nombre) and n > 25: return 104
+            if ("NITRATO AMONICO" in nombre or "NAC" in nombre) and n > 33: return 104
             
         if "UREA" in nombre: return 75
         if any(k in nombre for k in ["NITRATO DE CALCIO", "CALCINIT", "CALCILIQ"]): return 85
@@ -79,7 +82,7 @@ def motor_baremacion_itacyl(row):
         if "DAP" in nombre: return 34
         if "MAP" in nombre: return 30
         
-        # Cálculo estequiométrico para el resto (incluyendo excepciones de marca)
+        # Cálculo estequiométrico para el resto (incluyendo NAC 27 y excepciones)
         calc = (n * 1.65) + (p2o5 * 0.5) + (k2o * 1.9)
         return int(round(min(max(calc, 5), 140)))
 
@@ -104,14 +107,14 @@ def motor_baremacion_itacyl(row):
     else: 
         tipo = "[R]" if es_riego else "[F]"
 
-    # BYPASS DE EXCELENCIA (10,0): Inhibidores y Bioestimulantes
+    # BYPASS DE EXCELENCIA (10,0)
     kw_inh = ["DMPP", "NBPT", "INHIBIDOR", "ESTABILIZADO", "NOVATEC", "ENTEC", "NEXUR", "RHIZOVIT", "EXCELIS"]
     es_tec = row.get('nitrificationInhibitor') is True or row.get('ureaseInhibitor') is True
     
     if es_enm or es_tec or any(k in nombre for k in kw_inh):
         return nombre_protegido, tipo, "Bajo", IS_v, "10,0"
 
-    # FIX 1: NITRATOS DE CALCIO (9,5) - Protección directa en Riego/Cobertera
+    # FIX 1: NITRATOS DE CALCIO (9,5)
     es_nitrato_calcio = any(k in nombre for k in ["NITRATO DE CALCIO", "SOLUTECK", "CALCINIT", "CALCILIQ"]) or \
                         ("TECNOPLUS" in nombre and "CALCIO" in nombre)
     
@@ -119,7 +122,7 @@ def motor_baremacion_itacyl(row):
         return nombre_protegido, tipo, "Medio", IS_v, "9,5"
 
     # -------------------------------------------------------------------------
-    # FASE III: ALGORITMO ACUMULATIVO (Escenario A - Suelos Pesados)
+    # FASE III: ALGORITMO ACUMULATIVO
     # -------------------------------------------------------------------------
     baremo = 6.0
     if organicMatter > 20: baremo += 3.0
@@ -148,7 +151,6 @@ def motor_baremacion_itacyl(row):
         baremo -= 3.0
         riesgo = "Alto"
 
-    # Ajuste por Estrés Osmótico (Matriz IS)
     if IS_v < 20: baremo += 1.5
     elif 20 <= IS_v < 40: baremo += 0.5
     elif 40 <= IS_v <= 60: baremo += 0.0
@@ -172,16 +174,13 @@ class handler(BaseHTTPRequestHandler):
             df = pd.DataFrame(items)
             res_df = df.apply(lambda r: pd.Series(motor_baremacion_itacyl(r.to_dict())), axis=1)
             res_df.columns = ['name', 'Tipo', 'Riesgo', 'IS_valor', 'Baremo']
-            
             output = io.BytesIO()
             res_df.to_csv(output, index=False, sep=';', decimal=',', encoding='utf-8-sig')
-            
             self.send_response(200)
             self.send_header('Content-type', 'text/csv; charset=utf-8-sig')
-            self.send_header('Content-Disposition', 'attachment; filename="baremo_v150_consolidado.csv"')
+            self.send_header('Content-Disposition', 'attachment; filename="baremo_consolidado_v150.csv"')
             self.end_headers()
             self.wfile.write(output.getvalue())
-            
         except Exception as e:
             self.send_response(200)
             self.end_headers()
