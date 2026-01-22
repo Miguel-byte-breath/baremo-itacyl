@@ -71,7 +71,7 @@ def motor_baremacion_itacyl(row):
             if ("NITRATO AMONICO" in nombre or "NAC" in nombre) and n > 33: return 104
             
         if "UREA" in nombre: return 75
-        if any(k in nombre for k in ["NITRATO DE CALCIO", "CALCINIT", "CALCILIQ"]): return 85
+        if any(k in nombre for k in ["NITRATO DE CALCIO", "CALCINIT", "CALCILIQ"]): return 65
         if "SULFATO POTASICO" in nombre or "SOP" in nombre: return 46
         if "SULFATO AMONICO" in nombre: return 69
         if "CLORURO" in nombre: return 116
