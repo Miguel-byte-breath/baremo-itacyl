@@ -83,14 +83,20 @@ def motor_baremacion_itacyl(row):
 
     IS_v = calcular_is()
 
-    # -------------------------------------------------------------------------
+   # -------------------------------------------------------------------------
     # FASE II: CLASIFICACIÓN DE USO
     # -------------------------------------------------------------------------
     siex_e_directos = [1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 19, 20, 21, 22]
-    has_min = not pd.isna(row.get('yearPercent1'))
+    
+    # CORRECCIÓN CRÍTICA: Validamos que yearPercent1 sea numérico y mayor que 0
+    yp1 = row.get('yearPercent1')
+    has_min_val = (yp1 is not None) and (not pd.isna(yp1)) and (float(yp1) > 0)
+    
     is_siex_e = materialSiexId in siex_e_directos
     
-    es_enm = has_min or is_siex_e
+    # Una enmienda es tal si tiene ID de SIEX específico O mineralización positiva
+    es_enm = has_min_val or is_siex_e
+    
     es_cob = row.get('topDressing') is True
     es_riego = row.get('diluted') is True or row.get('aggregateState') == 'L' or "SOLUB" in nombre
 
